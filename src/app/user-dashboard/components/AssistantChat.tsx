@@ -39,6 +39,15 @@ const SUGGESTED_QUESTIONS = [
   'What is the forecast for Kerala?',
 ];
 
+const VOICE_LANGUAGES = LANGUAGES.filter((language) =>
+  ['en', 'hi', 'bn'].includes(language.code)
+);
+const VOICE_LOCALES: Record<string, string> = {
+  en: 'en-IN',
+  hi: 'hi-IN',
+  bn: 'bn-IN',
+};
+
 let idCounter = 0;
 const nextId = () => `msg-${Date.now()}-${idCounter++}`;
 
@@ -53,7 +62,7 @@ export default function AssistantChat() {
   const [input, setInput] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [expandedFactors, setExpandedFactors] = useState<string | null>(null);
-  const [language, setLanguage] = useState(LANGUAGES[0]);
+  const [language, setLanguage] = useState(VOICE_LANGUAGES[0]);
   const [persona, setPersona] = useState(PERSONAS[0]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -67,7 +76,7 @@ export default function AssistantChat() {
     locationName: DEMO_WEATHER.location,
     weather: DEMO_WEATHER,
     persona: persona.label,
-    language: language.label,
+    language: `${language.label} (${VOICE_LOCALES[language.code]})`,
   });
 
   const sendMessage = async (text: string): Promise<string> => {
@@ -96,7 +105,7 @@ export default function AssistantChat() {
   };
 
   const voice = useVoiceAssistant({
-    language: language.code === 'en' ? 'en-IN' : `${language.code}-IN`,
+    language: VOICE_LOCALES[language.code],
     onFinalTranscript: (t) => sendMessage(t),
   });
 
@@ -253,10 +262,10 @@ export default function AssistantChat() {
           </select>
           <select
             value={language.id}
-            onChange={(e) => setLanguage(LANGUAGES.find((l) => l.id === e.target.value) || LANGUAGES[0])}
+            onChange={(e) => setLanguage(VOICE_LANGUAGES.find((l) => l.id === e.target.value) || VOICE_LANGUAGES[0])}
             className="text-xs bg-secondary border border-border rounded-lg px-2 py-1.5 text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
           >
-            {LANGUAGES.map((l) => (
+            {VOICE_LANGUAGES.map((l) => (
               <option key={l.id} value={l.id}>
                 {l.native}
               </option>
