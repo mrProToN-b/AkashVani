@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { MessageSquare, Volume2, Bookmark, Share2, Sparkles, RotateCw, AlertCircle } from 'lucide-react';
-import { DEMO_WEATHER, DEMO_RISK, DEMO_AQI, DEMO_ALERTS } from '@/lib/mockData';
+import { DEMO_WEATHER } from '@/lib/mockData';
 import { summarizeWeather } from '@/lib/services/ai';
 import { useVoiceAssistant } from '@/lib/hooks/useVoiceAssistant';
 
@@ -19,14 +19,10 @@ export default function AISummaryCard() {
 
   const load = async () => {
     setState('loading');
-    // NOTE: the weather/risk/AQI/alert values fed in here are still preview data —
-    // Phase 2 wires this to a live weather provider. The card is honest about that below.
+    // Keep this weather-only request small so the summary stays responsive.
     const result = await summarizeWeather({
       locationName: DEMO_WEATHER.location,
       weather: DEMO_WEATHER,
-      risk: DEMO_RISK,
-      aqi: DEMO_AQI,
-      alerts: DEMO_ALERTS,
       persona: 'Default',
       language: 'English',
     });
@@ -96,7 +92,7 @@ export default function AISummaryCard() {
 
       {/* Sources */}
       <div className="mt-3 flex flex-wrap gap-1.5">
-        {['Weather data', 'Risk assessment', 'AQI', 'Active alerts'].map((src) => (
+        {['Weather data'].map((src) => (
           <span key={src} className="text-[10px] font-medium text-muted-foreground bg-secondary px-2 py-0.5 rounded-full border border-border">
             {src}
           </span>

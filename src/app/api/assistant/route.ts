@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 // ---------------------------------------------------------------------------
 // AkashVani AI Assistant — server route handler
@@ -12,8 +13,12 @@ export const runtime = 'nodejs';
 
 // Use the model currently supported for new Gemini API users. The model can
 // still be changed per deployment with GEMINI_MODEL.
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
-const GEMINI_TIMEOUT_MS = 45_000;
+// This assistant only produces short factual weather replies. Flash-Lite is
+// purpose-built for low-latency, high-throughput requests of this kind.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+const GEMINI_PRIMARY_TIMEOUT_MS = 40_000;
+const GEMINI_RETRY_TIMEOUT_MS = 15_000;
+const GEMINI_MAX_ATTEMPTS = 2;
 
 interface ChatTurn {
   role: 'user' | 'assistant';
@@ -47,10 +52,6 @@ function buildSystemInstruction(context: AssistantContext = {}, mode: string) {
   if (context.persona) contextLines.push(`User persona: ${context.persona}`);
   if (context.weather) contextLines.push(`Current weather data: ${JSON.stringify(context.weather)}`);
   if (context.forecastHourly) contextLines.push(`Hourly forecast data: ${JSON.stringify(context.forecastHourly)}`);
-  if (context.risk) contextLines.push(`Risk assessment data: ${JSON.stringify(context.risk)}`);
-  if (context.aqi) contextLines.push(`Air quality data: ${JSON.stringify(context.aqi)}`);
-  if (context.alerts) contextLines.push(`Active official alerts: ${JSON.stringify(context.alerts)}`);
-  if (context.mapSelection) contextLines.push(`Selected map point: ${JSON.stringify(context.mapSelection)}`);
 
   const base = `You are the AkashVani AI Assistant, a concise weather assistant for people in India.
 
@@ -97,6 +98,46 @@ function upstreamErrorMessage(status: number, detail: string) {
   return `AI assistant is temporarily unavailable (upstream ${status}).`;
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isTransientStatus(status: number) {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+async function fetchGemini(url: string, payload: object) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < GEMINI_MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        // A cold Gemini request can take over 30 seconds. Reserve most of the
+        // route budget for the primary request and leave a short retry window.
+        signal: AbortSignal.timeout(
+          attempt === 0 ? GEMINI_PRIMARY_TIMEOUT_MS : GEMINI_RETRY_TIMEOUT_MS
+        ),
+      });
+
+      if (!isTransientStatus(response.status) || attempt === GEMINI_MAX_ATTEMPTS - 1) {
+        return response;
+      }
+
+      // Release the response before retrying, then use a short exponential
+      // backoff with jitter to avoid retry storms during provider load.
+      await response.text().catch(() => '');
+    } catch (error) {
+      lastError = error;
+      if (attempt === GEMINI_MAX_ATTEMPTS - 1) throw error;
+    }
+
+    await sleep(600 * 2 ** attempt + Math.floor(Math.random() * 250));
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Gemini request failed.');
+}
+
 export async function POST(req: NextRequest) {
   const apiKey = process.env.GEMINI_API_KEY;
 
@@ -122,47 +163,25 @@ export async function POST(req: NextRequest) {
 
   const systemInstruction = buildSystemInstruction(context, mode);
 
-  const contents = [
-    ...history
-      // Brief weather answers do not need a long conversation replay. Keeping
-      // the request compact also reduces provider latency.
-      .slice(-4)
-      .filter(
-        (turn): turn is ChatTurn =>
-          Boolean(turn) &&
-          (turn.role === 'user' || turn.role === 'assistant') &&
-          typeof turn.text === 'string' &&
-          Boolean(turn.text.trim())
-      )
-      .map((turn) => ({
-        role: turn.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: turn.text }],
-      })),
-    { role: 'user', parts: [{ text: message }] },
-  ];
+  // This is a stateless, weather-only lookup. Excluding prior conversation
+  // turns avoids unnecessary model context and thought-signature overhead.
+  const contents = [{ role: 'user', parts: [{ text: message }] }];
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
 
+  const payload = {
+    systemInstruction: { parts: [{ text: systemInstruction }] },
+    contents,
+    generationConfig: {
+      temperature: 0.2,
+      // The assistant is intentionally limited to one or two short sentences.
+      maxOutputTokens: 96,
+      thinkingConfig: { thinkingLevel: 'minimal' },
+    },
+  };
+
   try {
-    const geminiRes = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemInstruction }] },
-        contents,
-        generationConfig: {
-          temperature: 0.4,
-          // The assistant is intentionally limited to one or two short sentences.
-          maxOutputTokens: 96,
-          // Gemini 3.6 defaults to medium reasoning. Minimal reasoning is a
-          // better fit for factual, brief weather responses and avoids long
-          // first-token delays.
-          thinkingConfig: { thinkingLevel: 'minimal' },
-        },
-      }),
-      // Keep this fast — the UI shows a "Thinking..." state, don't let it hang forever.
-      signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
-    });
+    const geminiRes = await fetchGemini(url, payload);
 
     if (!geminiRes.ok) {
       const errText = await geminiRes.text().catch(() => '');

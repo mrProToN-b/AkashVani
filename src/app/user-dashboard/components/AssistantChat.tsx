@@ -18,13 +18,10 @@ import {
 } from 'lucide-react';
 import {
   DEMO_WEATHER,
-  DEMO_RISK,
-  DEMO_AQI,
-  DEMO_ALERTS,
   PERSONAS,
   LANGUAGES,
 } from '@/lib/mockData';
-import { askAssistant, type ChatTurn, type AssistantContext } from '@/lib/services/ai';
+import { askAssistant, type AssistantContext } from '@/lib/services/ai';
 import { useVoiceAssistant } from '@/lib/hooks/useVoiceAssistant';
 
 interface Message {
@@ -64,24 +61,14 @@ export default function AssistantChat() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages, isThinking]);
 
-  // NOTE: weather/risk/AQI/alert context below is still preview data — Phase 2 wires
-  // this dashboard to a live provider. It is honestly labeled as such in the UI, and the
-  // assistant is told in its system prompt to treat it as the only data it has, so answers
-  // stay grounded in whatever is actually passed here rather than invented.
+  // Send only the weather fields needed by the restricted assistant. This keeps
+  // requests small and avoids asking the model to process unrelated dashboard data.
   const buildContext = (): AssistantContext => ({
     locationName: DEMO_WEATHER.location,
     weather: DEMO_WEATHER,
-    risk: DEMO_RISK,
-    aqi: DEMO_AQI,
-    alerts: DEMO_ALERTS,
     persona: persona.label,
     language: language.label,
   });
-
-  const historyForApi = (msgs: Message[]): ChatTurn[] =>
-    msgs
-      .filter((m) => m.role !== 'system')
-      .map((m) => ({ role: m.role as 'user' | 'assistant', text: m.text }));
 
   const sendMessage = async (text: string): Promise<string> => {
     const userMsg: Message = { id: nextId(), role: 'user', text };
@@ -90,7 +77,9 @@ export default function AssistantChat() {
     setInput('');
     setIsThinking(true);
 
-    const result = await askAssistant(text, historyForApi(messages), buildContext());
+    // Weather lookups are intentionally stateless so each request stays fast
+    // and cannot be slowed down by a growing chat transcript.
+    const result = await askAssistant(text, [], buildContext());
     setIsThinking(false);
 
     if (result.status === 'success' && result.data) {
@@ -436,11 +425,17 @@ export default function AssistantChat() {
           {voice.isSupported && (
             <button
               type="button"
-              onClick={() => {
+              onClick={async () => {
                 if (liveVoiceOpen) closeLiveVoice();
                 else {
-                  setLiveVoicePaused(false);
-                  setLiveVoiceOpen(true);
+                  // Ask for microphone access before opening the live session.
+                  // This makes the browser permission prompt predictable and
+                  // avoids starting recognition without user consent.
+                  const permitted = await voice.requestMicrophonePermission();
+                  if (permitted) {
+                    setLiveVoicePaused(false);
+                    setLiveVoiceOpen(true);
+                  }
                 }
               }}
               title="Start live voice chat"

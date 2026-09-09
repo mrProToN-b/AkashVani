@@ -46,6 +46,9 @@ export function useVoiceAssistant({ language = 'en-IN', onFinalTranscript }: Use
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const stoppedManually = useRef(false);
+  const isProcessingRef = useRef(false);
+  const permissionGrantedRef = useRef(false);
+  const onFinalTranscriptRef = useRef(onFinalTranscript);
 
   const isSupported =
     typeof window !== 'undefined' &&
@@ -58,20 +61,47 @@ export function useVoiceAssistant({ language = 'en-IN', onFinalTranscript }: Use
     }
   }, [isSupported]);
 
+  useEffect(() => {
+    onFinalTranscriptRef.current = onFinalTranscript;
+  }, [onFinalTranscript]);
+
+  /** Request mic access from a user-initiated action before recognition starts. */
+  const requestMicrophonePermission = useCallback(async () => {
+    if (!isSupported || !navigator.mediaDevices?.getUserMedia) {
+      setState('unsupported');
+      return false;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+      permissionGrantedRef.current = true;
+      return true;
+    } catch {
+      setState('permission_denied');
+      return false;
+    }
+  }, [isSupported]);
+
   const speak = useCallback(
     (text: string) => {
       if (!('speechSynthesis' in window)) return;
+      stoppedManually.current = false;
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = language;
       utterance.rate = 1;
       utteranceRef.current = utterance;
 
-      utterance.onstart = () => setState('speaking');
-      utterance.onend = () => {
-        if (!stoppedManually.current) setState('idle');
+      utterance.onstart = () => {
+        if (utteranceRef.current === utterance) setState('speaking');
       };
-      utterance.onerror = () => setState('idle');
+      utterance.onend = () => {
+        if (utteranceRef.current === utterance && !stoppedManually.current) setState('idle');
+      };
+      utterance.onerror = () => {
+        if (utteranceRef.current === utterance) setState('idle');
+      };
 
       window.speechSynthesis.speak(utterance);
     },
@@ -90,13 +120,22 @@ export function useVoiceAssistant({ language = 'en-IN', onFinalTranscript }: Use
     }, 150);
   }, []);
 
-  const startListening = useCallback(() => {
+  const startListening = useCallback(async () => {
     if (!isSupported) {
       setState('unsupported');
       return;
     }
+    if (isProcessingRef.current || recognitionRef.current || state === 'listening') return;
+
+    if (!permissionGrantedRef.current) {
+      const permitted = await requestMicrophonePermission();
+      if (!permitted) return;
+    }
     // Interrupt any speech in progress first.
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+
+    // There can only be one recognition instance at a time. This prevents
+    // duplicate transcripts and duplicate requests after a live-voice turn.
 
     const RecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!RecognitionCtor) {
@@ -120,30 +159,39 @@ export function useVoiceAssistant({ language = 'en-IN', onFinalTranscript }: Use
       }
       setTranscript(finalText || interimText);
 
-      if (finalText.trim()) {
+      if (finalText.trim() && !isProcessingRef.current) {
+        isProcessingRef.current = true;
+        recognition.stop();
         setState('thinking');
-        onFinalTranscript(finalText.trim())
+        onFinalTranscriptRef.current(finalText.trim())
           .then((answer) => {
-            setLastAnswer(answer);
-            speak(answer);
+            const response = answer.trim() || 'Sorry, I could not prepare a weather answer just now.';
+            setLastAnswer(response);
+            speak(response);
           })
           .catch(() => {
-            setLastAnswer('Sorry, I could not process that just now.');
-            speak('Sorry, I could not process that just now.');
+            const fallback = 'Sorry, I could not process that just now.';
+            setLastAnswer(fallback);
+            speak(fallback);
+          })
+          .finally(() => {
+            isProcessingRef.current = false;
           });
       }
     };
 
     recognition.onerror = (ev: Event & { error?: string }) => {
       if (ev.error === 'not-allowed' || ev.error === 'permission-denied') {
+        permissionGrantedRef.current = false;
         setState('permission_denied');
-      } else {
+      } else if (ev.error !== 'aborted') {
         setState('idle');
       }
     };
 
     recognition.onend = () => {
-      // If we're still "listening" when it ends (no result captured), go back to idle.
+      if (recognitionRef.current === recognition) recognitionRef.current = null;
+      // If we're still listening when it ends without a result, return to idle.
       setState((prev) => (prev === 'listening' ? 'idle' : prev));
     };
 
@@ -152,12 +200,14 @@ export function useVoiceAssistant({ language = 'en-IN', onFinalTranscript }: Use
       setState('listening');
       setTranscript('');
     } catch {
+      if (recognitionRef.current === recognition) recognitionRef.current = null;
       setState('idle');
     }
-  }, [isSupported, language, onFinalTranscript, speak]);
+  }, [isSupported, language, requestMicrophonePermission, speak, state]);
 
   const stopListening = useCallback(() => {
     recognitionRef.current?.stop();
+    recognitionRef.current = null;
     setState('idle');
   }, []);
 
@@ -173,6 +223,7 @@ export function useVoiceAssistant({ language = 'en-IN', onFinalTranscript }: Use
     transcript,
     lastAnswer,
     isSupported,
+    requestMicrophonePermission,
     startListening,
     stopListening,
     interrupt,
