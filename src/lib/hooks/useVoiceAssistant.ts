@@ -39,6 +39,20 @@ interface UseVoiceAssistantOptions {
   onFinalTranscript: (transcript: string) => Promise<string>; // returns the answer text to speak
 }
 
+function findPreferredVoice(locale: string): SpeechSynthesisVoice | undefined {
+  const voices = window.speechSynthesis.getVoices();
+  const normalizedLocale = locale.toLowerCase();
+  const baseLanguage = normalizedLocale.split('-')[0];
+
+  // Prefer the exact Indian locale, then any installed voice for the same
+  // language (for example bn-BD when bn-IN is not installed).
+  return (
+    voices.find((voice) => voice.lang.toLowerCase() === normalizedLocale) ||
+    voices.find((voice) => voice.lang.toLowerCase().startsWith(`${baseLanguage}-`)) ||
+    voices.find((voice) => voice.lang.toLowerCase() === baseLanguage)
+  );
+}
+
 export function useVoiceAssistant({ language = 'en-IN', onFinalTranscript }: UseVoiceAssistantOptions) {
   const [state, setState] = useState<VoiceState>('idle');
   const [transcript, setTranscript] = useState('');
@@ -65,6 +79,16 @@ export function useVoiceAssistant({ language = 'en-IN', onFinalTranscript }: Use
     onFinalTranscriptRef.current = onFinalTranscript;
   }, [onFinalTranscript]);
 
+  useEffect(() => {
+    if (!('speechSynthesis' in window)) return;
+    // Calling getVoices primes Chrome/Edge's asynchronous voice catalogue so
+    // Hindi and Bengali voices are available before the first reply arrives.
+    window.speechSynthesis.getVoices();
+    const preloadVoices = () => window.speechSynthesis.getVoices();
+    window.speechSynthesis.addEventListener('voiceschanged', preloadVoices);
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', preloadVoices);
+  }, []);
+
   /** Request mic access from a user-initiated action before recognition starts. */
   const requestMicrophonePermission = useCallback(async () => {
     if (!isSupported || !navigator.mediaDevices?.getUserMedia) {
@@ -88,8 +112,11 @@ export function useVoiceAssistant({ language = 'en-IN', onFinalTranscript }: Use
       if (!('speechSynthesis' in window)) return;
       stoppedManually.current = false;
       window.speechSynthesis.cancel();
+      window.speechSynthesis.resume();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = language;
+      const voice = findPreferredVoice(language);
+      if (voice) utterance.voice = voice;
       utterance.rate = 1;
       utteranceRef.current = utterance;
 

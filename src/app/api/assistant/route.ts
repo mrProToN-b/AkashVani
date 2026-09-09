@@ -46,6 +46,23 @@ interface AssistantRequestBody {
 
 function buildSystemInstruction(context: AssistantContext = {}, mode: string) {
   const languageName = context.language || 'English';
+  const isHindi = languageName.startsWith('Hindi');
+  const isBengali = languageName.startsWith('Bengali');
+  const scopeReply = isHindi
+    ? 'मैं केवल भारत के राज्यों और केंद्र शासित प्रदेशों की संक्षिप्त मौसम जानकारी दे सकता हूँ।'
+    : isBengali
+    ? 'আমি শুধু ভারতের রাজ্য ও কেন্দ্রশাসিত অঞ্চলের সংক্ষিপ্ত আবহাওয়ার তথ্য দিতে পারি।'
+    : 'I can provide brief weather information for states and Union Territories in India.';
+  const missingDataReply = isHindi
+    ? 'मेरे पास अभी [स्थान] के लिए मौसम की जानकारी नहीं है।'
+    : isBengali
+    ? 'আমার কাছে এখন [স্থান]-এর আবহাওয়ার তথ্য নেই।'
+    : "I don't have weather data for [place] right now.";
+  const languageRule = languageName.startsWith('Hindi')
+    ? 'Reply only in Hindi, written in Devanagari script.'
+    : languageName.startsWith('Bengali')
+    ? 'Reply only in Bengali, written in Bengali script.'
+    : 'Reply only in English.';
 
   const contextLines: string[] = [];
   if (context.locationName) contextLines.push(`Location: ${context.locationName}`);
@@ -57,11 +74,11 @@ function buildSystemInstruction(context: AssistantContext = {}, mode: string) {
 
 Rules you must always follow:
 - Answer only questions about weather conditions or forecasts for states and Union Territories in India. Do not answer general knowledge, non-weather, non-Indian-location, disaster, AQI, health, or alert questions.
-- If a request is outside that scope, reply only: "I can provide brief weather information for states and Union Territories in India."
+- If a request is outside that scope, reply only: "${scopeReply}"
 - Only use the DATA CONTEXT block below as your factual basis. Never invent weather measurements, forecasts, locations, or dates.
-- If the context does not contain weather data for the requested state or Union Territory, reply only: "I don't have weather data for [place] right now."
-- Keep every answer to one or two brief sentences (45 words maximum).
-- Reply in ${languageName}.
+- If the context does not contain weather data for the requested state or Union Territory, reply only: "${missingDataReply}"
+- Keep every answer to one or two brief sentences (30 words maximum).
+- ${languageRule} The requested voice locale is ${languageName}.
 - Never claim something is "live" or "official" unless the context explicitly says so.
 
 DATA CONTEXT:
@@ -175,7 +192,7 @@ export async function POST(req: NextRequest) {
     generationConfig: {
       temperature: 0.2,
       // The assistant is intentionally limited to one or two short sentences.
-      maxOutputTokens: 96,
+      maxOutputTokens: 64,
       thinkingConfig: { thinkingLevel: 'minimal' },
     },
   };
